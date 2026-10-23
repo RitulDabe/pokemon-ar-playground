@@ -1,0 +1,186 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<meta name="theme-color" content="#101522">
+<title>Pokémon AR Playground</title>
+<style>
+:root{color-scheme:dark;font-family:system-ui,-apple-system,Segoe UI,sans-serif}
+*{box-sizing:border-box}html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#101522;color:#fff}
+#overlay{position:fixed;inset:0;z-index:2;pointer-events:none;display:flex;flex-direction:column;justify-content:space-between;padding:18px}
+header,.panel,.hint{pointer-events:auto}
+header{display:flex;justify-content:space-between;align-items:center;gap:12px}
+.brand{font-weight:850;letter-spacing:.3px;font-size:17px;text-shadow:0 2px 12px #000}
+.pill{font-size:11px;background:#252f43;border:1px solid #45516a;border-radius:999px;padding:7px 10px;color:#dce7ff}
+.panel{align-self:center;width:min(440px,100%);margin:auto 0;background:#141b2bd9;backdrop-filter:blur(14px);border:1px solid #ffffff26;border-radius:24px;padding:22px;box-shadow:0 20px 70px #0007}
+h1{font-size:clamp(27px,7vw,38px);line-height:1.02;margin:0 0 10px}
+p{color:#c4cde0;line-height:1.5;font-size:14px;margin:0 0 16px}
+button{border:0;border-radius:14px;padding:13px 16px;font-weight:750;font-size:15px;cursor:pointer}
+.primary{width:100%;background:linear-gradient(100deg,#ffd84d,#ff9d42);color:#201a0c}
+.secondary{background:#273249;color:#fff}
+.row{display:flex;gap:8px;margin-top:10px}.row button{flex:1}
+#status{margin-top:12px;font-size:12px;color:#c9d6ef;min-height:18px}
+#ar-ui{display:none;position:fixed;z-index:3;bottom:22px;left:16px;right:16px;pointer-events:none;text-align:center}
+#ar-ui button{pointer-events:auto;box-shadow:0 5px 24px #0007}
+#place{background:#ffd84d;color:#211a05;min-width:190px}
+#help{position:fixed;z-index:3;top:75px;left:50%;transform:translateX(-50%);width:max-content;max-width:90%;background:#111a2be0;border:1px solid #ffffff25;border-radius:999px;padding:10px 14px;font-size:12px;color:#edf3ff;display:none}
+#scene-note{font-size:11px;color:#aab5ca;margin-top:12px}
+#fallback{display:none}
+a{color:#ffda63}
+</style>
+</head>
+<body>
+<div id="overlay">
+  <header><div class="brand">⚡ Pokémon AR Playground</div><div class="pill">WEB AR DEMO</div></header>
+  <section class="panel" id="welcome">
+    <h1>Bring your<br><span style="color:#ffd84d">Pokémon</span> to life.</h1>
+    <p>Place a playful 3D Pikachu-inspired buddy and a Charmander-inspired buddy on your real floor using your phone camera.</p>
+    <button class="primary" id="start">Start AR experience →</button>
+    <div id="status">For best results, use a compatible Android phone in Chrome over HTTPS.</div>
+    <div id="scene-note">Camera permission is requested only when you start. This demo uses simple, original primitive-based fan models rather than official Pokémon game assets.</div>
+  </section>
+  <footer style="font-size:11px;color:#c4cde0;text-align:center;text-shadow:0 1px 8px #000">Move your phone slowly to help the device detect the floor.</footer>
+</div>
+<div id="help">Move your phone to find a surface, then tap “Place Pokémon”.</div>
+<div id="ar-ui"><button id="place">Place Pokémon on floor</button><div style="margin-top:8px"><button class="secondary" id="exit">Exit AR</button></div></div>
+<script type="module">
+import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js';
+
+const startBtn=document.querySelector('#start'), statusEl=document.querySelector('#status');
+const welcome=document.querySelector('#welcome'), overlay=document.querySelector('#overlay');
+const arUI=document.querySelector('#ar-ui'), help=document.querySelector('#help');
+let renderer, scene, camera, xrSession, hitTestSource, reticle, group, placed=false, frameRefSpace;
+const clock=new THREE.Clock();
+
+function mat(color, roughness=.8){return new THREE.MeshStandardMaterial({color,roughness});}
+function ball(parent, color, pos, scale, material=null){
+ const m=new THREE.Mesh(new THREE.SphereGeometry(1,24,16),material||mat(color));
+ m.position.set(...pos);m.scale.set(...scale);m.castShadow=true;m.receiveShadow=true;parent.add(m);return m;
+}
+function cone(parent,color,pos,scale,rot=[0,0,0]){
+ const m=new THREE.Mesh(new THREE.ConeGeometry(0.5,1,16),mat(color));
+ m.position.set(...pos);m.scale.set(...scale);m.rotation.set(...rot);m.castShadow=true;parent.add(m);return m;
+}
+function cylinder(parent,color,pos,scale,rot=[0,0,0]){
+ const m=new THREE.Mesh(new THREE.CylinderGeometry(.5,.5,1,16),mat(color));
+ m.position.set(...pos);m.scale.set(...scale);m.rotation.set(...rot);m.castShadow=true;parent.add(m);return m;
+}
+function makePika(){
+ const g=new THREE.Group(); const yellow=mat('#ffd83d'), dark=mat('#342a26'), red=mat('#f0444c'), cream=mat('#fff0bd');
+ ball(g,0,[0,.36,0],[.29,.34,.22],yellow);
+ ball(g,0,[0,.78,0],[.27,.26,.23],yellow);
+ // ears
+ cone(g,'#ffd83d',[-.16,1.12,0],[.12,.48,.12],[0,0,.18]);
+ cone(g,'#ffd83d',[.16,1.12,0],[.12,.48,.12],[0,0,-.18]);
+ cone(g,'#2b2526',[-.19,1.31,0],[.08,.13,.08],[0,0,.18]);
+ cone(g,'#2b2526',[.19,1.31,0],[.08,.13,.08],[0,0,-.18]);
+ // face
+ ball(g,0,[0,.70,.205],[.07,.055,.025],dark);
+ ball(g,0,[-.105,.82,.197],[.035,.045,.025],dark);ball(g,0,[.105,.82,.197],[.035,.045,.025],dark);
+ ball(g,0,[-.19,.73,.18],[.065,.065,.025],red);ball(g,0,[.19,.73,.18],[.065,.065,.025],red);
+ ball(g,0,[0,.48,.205],[.18,.10,.035],cream);
+ // arms, feet
+ ball(g,0,[-.29,.39,.02],[.09,.16,.10],yellow);ball(g,0,[.29,.39,.02],[.09,.16,.10],yellow);
+ ball(g,0,[-.15,.08,.02],[.13,.08,.16],yellow);ball(g,0,[.15,.08,.02],[.13,.08,.16],yellow);
+ // zig-zag tail
+ const tail=cone(g,'#ffd83d',[.31,.47,-.12],[.17,.47,.12],[0,0,-.65]);
+ tail.rotation.z=-.7;
+ cone(g,'#a8792b',[.33,.67,-.12],[.11,.20,.08],[0,0,-.65]);
+ g.scale.setScalar(.62); return g;
+}
+function makeChar(){
+ const g=new THREE.Group(); const orange=mat('#ff8a38'), cream=mat('#ffdca5'), blue=mat('#4bb9d2'), dark=mat('#382820');
+ ball(g,0,[0,.38,0],[.25,.34,.20],orange);
+ ball(g,0,[0,.79,0],[.23,.24,.21],orange);
+ // muzzle, eyes
+ ball(g,0,[0,.71,.18],[.13,.08,.06],cream);
+ ball(g,0,[-.085,.83,.185],[.033,.047,.025],dark);ball(g,0,[.085,.83,.185],[.033,.047,.025],dark);
+ ball(g,0,[-.095,.845,.207],[.01,.015,.008],mat('#ffffff'));ball(g,0,[.075,.845,.207],[.01,.015,.008],mat('#ffffff'));
+ cone(g,'#ff8a38',[-.12,1.01,0],[.09,.22,.09],[0,0,.25]);cone(g,'#ff8a38',[.12,1.01,0],[.09,.22,.09],[0,0,-.25]);
+ ball(g,0,[-.12,.07,.02],[.12,.07,.15],orange);ball(g,0,[.12,.07,.02],[.12,.07,.15],orange);
+ ball(g,0,[-.25,.40,0],[.08,.15,.09],orange);ball(g,0,[.25,.40,0],[.08,.15,.09],orange);
+ // tail curves using tube
+ const pts=[new THREE.Vector3(.18,.25,-.08),new THREE.Vector3(.38,.32,-.10),new THREE.Vector3(.48,.52,-.1),new THREE.Vector3(.60,.60,-.1)];
+ const curve=new THREE.CatmullRomCurve3(pts);
+ const tube=new THREE.Mesh(new THREE.TubeGeometry(curve,20,.045,8,false),orange);g.add(tube);
+ // stylized flame
+ ball(g,0,[.62,.72,-.1],[.10,.14,.10],mat('#ff5b2e'));
+ cone(g,'#ffca45',[.62,.82,-.1],[.09,.19,.09],[0,0,0]);
+ ball(g,0,[.62,.70,-.01],[.045,.07,.045],mat('#fff1a0'));
+ g.scale.setScalar(.62);return g;
+}
+function initScene(){
+ scene=new THREE.Scene();
+ camera=new THREE.PerspectiveCamera();
+ scene.add(new THREE.HemisphereLight(0xffffff,0x6e7890,2));
+ const light=new THREE.DirectionalLight(0xffffff,2.2);light.position.set(1,3,2);scene.add(light);
+ renderer=new THREE.WebGLRenderer({antialias:true,alpha:true});
+ renderer.setPixelRatio(Math.min(window.devicePixelRatio,2));renderer.setSize(window.innerWidth,window.innerHeight);
+ renderer.xr.enabled=true;renderer.shadowMap.enabled=true;renderer.outputColorSpace=THREE.SRGBColorSpace;
+ document.body.appendChild(renderer.domElement);
+ renderer.domElement.style.position='fixed';renderer.domElement.style.inset='0';renderer.domElement.style.zIndex='1';
+ reticle=new THREE.Group();
+ const ring=new THREE.Mesh(new THREE.RingGeometry(.08,.105,32),new THREE.MeshBasicMaterial({color:0xffd84d,side:THREE.DoubleSide}));
+ ring.rotation.x=-Math.PI/2;reticle.add(ring);
+ const dot=new THREE.Mesh(new THREE.CircleGeometry(.025,24),new THREE.MeshBasicMaterial({color:0xffffff,side:THREE.DoubleSide}));
+ dot.rotation.x=-Math.PI/2;dot.position.y=.001;reticle.add(dot);
+ reticle.matrixAutoUpdate=false;reticle.visible=false;scene.add(reticle);
+ group=new THREE.Group();group.visible=false;
+ const p=makePika();p.position.x=-.25;group.add(p);
+ const c=makeChar();c.position.x=.28;group.add(c);
+ // soft shadow disks
+ for(const x of [-.25,.28]){
+  const shadow=new THREE.Mesh(new THREE.CircleGeometry(.20,32),new THREE.MeshBasicMaterial({color:0x101522,transparent:true,opacity:.22,depthWrite:false}));
+  shadow.rotation.x=-Math.PI/2;shadow.position.set(x,.004,0);group.add(shadow);
+ }
+ scene.add(group);
+ window.addEventListener('resize',()=>{if(renderer){renderer.setSize(window.innerWidth,window.innerHeight);}});
+}
+async function startAR(){
+ startBtn.disabled=true;statusEl.textContent='Checking AR support…';
+ try{
+  if(!navigator.xr) throw new Error('This browser does not expose WebXR. Try a supported Android phone in Chrome, with Google Play Services for AR installed.');
+  const supported=await navigator.xr.isSessionSupported('immersive-ar');
+  if(!supported) throw new Error('Immersive AR is not supported on this device/browser. Try a compatible Android phone in Chrome.');
+  initScene();
+  xrSession=await navigator.xr.requestSession('immersive-ar',{requiredFeatures:['hit-test'],optionalFeatures:['dom-overlay','local-floor'],domOverlay:{root:document.body}});
+  await renderer.xr.setSession(xrSession);
+  frameRefSpace=await xrSession.requestReferenceSpace('viewer');
+  hitTestSource=await xrSession.requestHitTestSource({space:frameRefSpace});
+  const localSpace=await xrSession.requestReferenceSpace('local');
+  renderer.setAnimationLoop((time,frame)=>{
+    if(frame&&hitTestSource){
+      const hits=frame.getHitTestResults(hitTestSource);
+      if(hits.length){const pose=hits[0].getPose(localSpace);reticle.visible=true;reticle.matrix.fromArray(pose.transform.matrix);}
+      else reticle.visible=false;
+    }
+    if(group.visible){const t=clock.getElapsedTime();group.children[0].position.y=Math.sin(t*2.3)*.025;group.children[1].position.y=Math.sin(t*2.3+1)*.025;}
+    renderer.render(scene,camera);
+  });
+  welcome.style.display='none';overlay.style.pointerEvents='none';document.querySelector('header').style.display='none';
+  arUI.style.display='block';help.style.display='block';statusEl.textContent='';
+  xrSession.addEventListener('end',cleanup,{once:true});
+ }catch(e){
+  statusEl.textContent=e.message||'Could not start AR. Check camera permissions and HTTPS.';
+  startBtn.disabled=false;
+  if(renderer){renderer.dispose();renderer.domElement.remove();renderer=null;}
+ }
+}
+function place(){
+ if(reticle.visible){group.position.setFromMatrixPosition(reticle.matrix);group.quaternion.setFromRotationMatrix(reticle.matrix);group.visible=true;placed=true;help.textContent='Pokémon placed! Move around to view them.';document.querySelector('#place').textContent='Move Pokémon here';}
+ else {help.textContent='No surface yet — slowly move your phone and aim at a textured floor.';}
+}
+function cleanup(){
+ if(renderer){renderer.setAnimationLoop(null);renderer.dispose();renderer.domElement.remove();renderer=null;}
+ if(hitTestSource){hitTestSource.cancel();hitTestSource=null;}
+ xrSession=null;scene=null;camera=null;group=null;reticle=null;
+ welcome.style.display='block';overlay.style.pointerEvents='auto';document.querySelector('header').style.display='flex';
+ arUI.style.display='none';help.style.display='none';startBtn.disabled=false;statusEl.textContent='AR session ended. Tap Start to try again.';
+}
+startBtn.addEventListener('click',startAR);
+document.querySelector('#place').addEventListener('click',place);
+document.querySelector('#exit').addEventListener('click',()=>{if(xrSession)xrSession.end();else cleanup();});
+</script>
+</body>
+</html>
